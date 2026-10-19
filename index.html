@@ -235,26 +235,33 @@ function setOverlay(text) { overlayEl.textContent = text; }
 
 // ============ 摄像头枚举 ============
 async function listCameras() {
+  // 先尝试请求权限（成功后 enumerateDevices 能拿到 label）
   try {
     const temp = await navigator.mediaDevices.getUserMedia({ video: true });
     temp.getTracks().forEach(t => t.stop());
   } catch (e) {
-    log('无法获取摄像头权限: ' + e.message, 'err');
-    return;
+    log('摄像头权限请求被拒绝或无设备（仍尝试枚举）', 'warn');
+    // 不 return，继续尝试 enumerateDevices
   }
-  const devices = await navigator.mediaDevices.enumerateDevices();
-  const cams = devices.filter(d => d.kind === 'videoinput');
-  camSelect.innerHTML = '';
-  if (cams.length === 0) {
-    camSelect.innerHTML = '<option value="">未检测到摄像头</option>';
-    return;
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const cams = devices.filter(d => d.kind === 'videoinput');
+    camSelect.innerHTML = '';
+    if (cams.length === 0) {
+      camSelect.innerHTML = '<option value="">未检测到摄像头</option>';
+      log('未检测到摄像头设备', 'warn');
+      return;
+    }
+    cams.forEach((c, i) => {
+      const opt = document.createElement('option');
+      opt.value = c.deviceId;
+      opt.textContent = c.label || `摄像头 ${i + 1}`;
+      camSelect.appendChild(opt);
+    });
+  } catch (e2) {
+    camSelect.innerHTML = '<option value="">枚举失败</option>';
+    log('枚举摄像头失败: ' + e2.message, 'err');
   }
-  cams.forEach((c, i) => {
-    const opt = document.createElement('option');
-    opt.value = c.deviceId;
-    opt.textContent = c.label || `摄像头 ${i + 1}`;
-    camSelect.appendChild(opt);
-  });
 }
 
 // ============ 启动摄像头 ============
