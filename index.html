@@ -304,7 +304,8 @@ async function ensureWorker() {
   setOverlay('加载 OCR 中...');
   worker = await Tesseract.createWorker('chi_sim', 1, {
     workerPath: TESS_WORKER,
-    workerBlobURL: false,
+    // workerBlobURL 默认就是 true：用 fetch 下载 worker 脚本 → 生成 Blob URL → Worker 加载
+    // 这样绕开了 Worker 直接加载远程脚本时的 CORS 限制
     corePath: TESS_CORE,
     langPath: TESS_LANG,
     gzip: true,
