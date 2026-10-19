@@ -446,9 +446,11 @@ async function ocrTick() {
     const wkr = await ensureWorker();
 
     let info = null;
+    let lastRawText = '';
     for (let attempt = 0; attempt < 2 && !info; attempt++) {
       if (attempt === 1) enhanceImage(ocrTarget);
       const { data } = await wkr.recognize(ocrTarget);
+      lastRawText = data.text || '';
       info = extractLabelInfo(data.words || [], data.text || '');
     }
 
@@ -476,6 +478,10 @@ async function ocrTick() {
       }
       setStatus('<span class="warn">未检测到有效标签</span><br>请将标签对准摄像头');
       setOverlay('搜索标签中...');
+      // 打印 OCR 原始输出（每 20 帧打印一次，避免刷屏）
+      if (noLabelFrames % 20 === 0 && lastRawText.trim()) {
+        log('OCR原始输出: [' + lastRawText.trim().replace(/\n/g, ' | ') + ']', 'warn');
+      }
     }
   } catch (e) {
     log('OCR 出错: ' + e.message, 'err');
@@ -519,17 +525,21 @@ async function manualCapture() {
     ocrCtx.drawImage(video, 0, 0, w, h);
     const wkr = await ensureWorker();
     let info = null;
+    let lastRawText = '';
     for (let attempt = 0; attempt < 2 && !info; attempt++) {
       if (attempt === 1) enhanceImage(ocrCanvas);
       const { data } = await wkr.recognize(ocrCanvas);
+      lastRawText = data.text || '';
       info = extractLabelInfo(data.words || [], data.text || '');
     }
+    // 打印 OCR 原始输出（诊断用）
+    log('手动拍照 OCR原始输出: [' + lastRawText.trim().replace(/\n/g, ' | ') + ']', info ? 'ok' : 'warn');
     if (info) {
       log('手动拍照: ' + info.number + '_' + info.nickname, 'ok');
       await captureAndSave(info.nickname, info.number);
     } else {
       const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-      log('手动拍照（未识别到文字）: ' + ts, 'warn');
+      log('手动拍照（未识别到标签，OCR能看到文字但提取失败）: ' + ts, 'warn');
       await captureAndSave('未命名', ts);
     }
   } catch (e) {
