@@ -1,0 +1,598 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>标签识别自动拍照</title>
+<script src="https://fastly.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+  background: #1e1e2e;
+  color: #e0e0e0;
+  min-height: 100vh;
+  padding: 16px;
+}
+h1 { font-size: 20px; margin-bottom: 6px; color: #89b4fa; }
+.tip { font-size: 12px; color: #888; margin-bottom: 12px; }
+.container { max-width: 1280px; margin: 0 auto; }
+.toolbar {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+  padding: 12px;
+  background: #2a2a3e;
+  border-radius: 8px;
+}
+.toolbar label { font-size: 14px; }
+select, button {
+  padding: 8px 14px;
+  border-radius: 6px;
+  border: 1px solid #444;
+  background: #3a3a4e;
+  color: #e0e0e0;
+  font-size: 14px;
+  cursor: pointer;
+}
+select { min-width: 220px; }
+button { font-weight: bold; }
+button.primary { background: #89b4fa; color: #1e1e2e; border-color: #89b4fa; }
+button.danger { background: #f38ba8; color: #1e1e2e; border-color: #f38ba8; }
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+.main {
+  display: grid;
+  grid-template-columns: 1fr 340px;
+  gap: 12px;
+}
+@media (max-width: 900px) { .main { grid-template-columns: 1fr; } }
+.video-wrap {
+  background: #111;
+  border-radius: 8px;
+  overflow: hidden;
+  position: relative;
+  aspect-ratio: 16/9;
+}
+.video-wrap video {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+.overlay {
+  position: absolute;
+  top: 10px; left: 10px;
+  background: rgba(0,0,0,0.6);
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+}
+.flash {
+  position: absolute;
+  inset: 0;
+  background: white;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.1s;
+}
+.flash.show { opacity: 0.8; }
+.region-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+.panel {
+  background: #2a2a3e;
+  border-radius: 8px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.panel h2 { font-size: 15px; color: #a6e3a1; }
+.status-box {
+  background: #1e1e2e;
+  border-radius: 6px;
+  padding: 10px;
+  font-size: 13px;
+  min-height: 80px;
+  line-height: 1.6;
+}
+.status-box .ok { color: #a6e3a1; }
+.status-box .warn { color: #f9e2af; }
+.status-box .err { color: #f38ba8; }
+.log {
+  background: #111;
+  border-radius: 6px;
+  padding: 8px;
+  font-size: 12px;
+  font-family: Consolas, monospace;
+  max-height: 220px;
+  overflow-y: auto;
+  line-height: 1.5;
+}
+.log div { margin-bottom: 2px; }
+.captured {
+  margin-top: 12px;
+  background: #2a2a3e;
+  border-radius: 8px;
+  padding: 12px;
+}
+.captured h2 { font-size: 15px; color: #a6e3a1; margin-bottom: 8px; }
+.thumbs {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.thumb {
+  position: relative;
+  width: 120px;
+  border-radius: 4px;
+  overflow: hidden;
+  border: 1px solid #444;
+}
+.thumb img { width: 100%; display: block; }
+.thumb .cap {
+  position: absolute; bottom: 0; left: 0; right: 0;
+  background: rgba(0,0,0,0.7);
+  font-size: 11px;
+  padding: 2px 4px;
+  text-align: center;
+}
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>标签识别自动拍照</h1>
+  <div class="tip">本页无需安装，打开即用。照片自动下载到浏览器默认下载文件夹。首次加载 OCR 引擎需 10-30 秒。</div>
+  <div class="toolbar">
+    <label>摄像头：</label>
+    <select id="camSelect"><option value="">加载中...</option></select>
+    <button id="startBtn" class="primary">开始识别</button>
+    <button id="stopBtn" class="danger" disabled>停止</button>
+    <button id="manualBtn">手动拍照</button>
+    <button id="deleteBtn" class="danger">移除上一张</button>
+    <span id="counter" style="margin-left:auto;font-size:14px;color:#a6e3a1;">已拍照: 0</span>
+  </div>
+
+  <div class="main">
+    <div class="video-wrap">
+      <video id="video" autoplay playsinline muted></video>
+      <canvas class="region-canvas" id="regionCanvas"></canvas>
+      <div class="overlay" id="overlay">未启动</div>
+      <div class="flash" id="flash"></div>
+    </div>
+    <div class="panel">
+      <h2>识别状态</h2>
+      <div class="status-box" id="status">点击"开始识别"启动</div>
+      <h2>日志</h2>
+      <div class="log" id="log"></div>
+    </div>
+  </div>
+
+  <div class="captured">
+    <h2>已拍照 (<span id="capCount">0</span>) <span style="font-size:12px;color:#888;font-weight:normal;">快捷键: F2 手动拍照 · F3 连按3次移除上一张</span></h2>
+    <div class="thumbs" id="thumbs"></div>
+  </div>
+</div>
+
+<script>
+// ============ 全局状态 ============
+const video = document.getElementById('video');
+const camSelect = document.getElementById('camSelect');
+const startBtn = document.getElementById('startBtn');
+const stopBtn = document.getElementById('stopBtn');
+const manualBtn = document.getElementById('manualBtn');
+const statusEl = document.getElementById('status');
+const logEl = document.getElementById('log');
+const overlayEl = document.getElementById('overlay');
+const flashEl = document.getElementById('flash');
+const regionCanvas = document.getElementById('regionCanvas');
+const regionCtx = regionCanvas.getContext('2d');
+const thumbsEl = document.getElementById('thumbs');
+const capCountEl = document.getElementById('capCount');
+const counterEl = document.getElementById('counter');
+
+let stream = null;
+let worker = null;
+let running = false;
+let ocrTimer = null;
+let ocrBusy = false;
+let capturedCount = 0;
+const capturedSet = new Set();
+const capturedNames = [];
+let f3Count = 0;
+let f3Timer = null;
+let lastCaptureKey = '';
+let lastCaptureTime = 0;
+let noLabelFrames = 0;
+const NO_LABEL_RESET = 3;
+const CAPTURE_COOLDOWN = 2000;
+const OCR_INTERVAL = 800;
+
+const ocrCanvas = document.createElement('canvas');
+const ocrCtx = ocrCanvas.getContext('2d');
+const saveCanvas = document.createElement('canvas');
+const saveCtx = saveCanvas.getContext('2d');
+
+// ============ 工具函数 ============
+function log(msg, type) {
+  const div = document.createElement('div');
+  const time = new Date().toLocaleTimeString('zh-CN');
+  const color = type === 'ok' ? '#a6e3a1' : type === 'warn' ? '#f9e2af' : type === 'err' ? '#f38ba8' : '#e0e0e0';
+  div.style.color = color;
+  div.textContent = `[${time}] ${msg}`;
+  logEl.appendChild(div);
+  logEl.scrollTop = logEl.scrollHeight;
+  while (logEl.children.length > 100) logEl.removeChild(logEl.firstChild);
+}
+
+function setStatus(html) { statusEl.innerHTML = html; }
+function setOverlay(text) { overlayEl.textContent = text; }
+
+// ============ 摄像头枚举 ============
+async function listCameras() {
+  try {
+    const temp = await navigator.mediaDevices.getUserMedia({ video: true });
+    temp.getTracks().forEach(t => t.stop());
+  } catch (e) {
+    log('无法获取摄像头权限: ' + e.message, 'err');
+    return;
+  }
+  const devices = await navigator.mediaDevices.enumerateDevices();
+  const cams = devices.filter(d => d.kind === 'videoinput');
+  camSelect.innerHTML = '';
+  if (cams.length === 0) {
+    camSelect.innerHTML = '<option value="">未检测到摄像头</option>';
+    return;
+  }
+  cams.forEach((c, i) => {
+    const opt = document.createElement('option');
+    opt.value = c.deviceId;
+    opt.textContent = c.label || `摄像头 ${i + 1}`;
+    camSelect.appendChild(opt);
+  });
+}
+
+// ============ 启动摄像头 ============
+async function startCamera() {
+  if (stream) { stopCamera(); }
+  const deviceId = camSelect.value;
+  const constraints = {
+    video: deviceId ? { deviceId: { exact: deviceId } } : { facingMode: 'environment' },
+    audio: false
+  };
+  try {
+    stream = await navigator.mediaDevices.getUserMedia(constraints);
+    video.srcObject = stream;
+    await video.play();
+    log('摄像头已启动', 'ok');
+  } catch (e) {
+    log('启动摄像头失败: ' + e.message, 'err');
+    setStatus('<span class="err">摄像头启动失败：' + e.message + '</span>');
+  }
+}
+
+function stopCamera() {
+  if (stream) {
+    stream.getTracks().forEach(t => t.stop());
+    stream = null;
+  }
+}
+
+// ============ OCR 识别核心（全部 CDN 同源 jsdelivr） ============
+const TESS_WORKER = 'https://fastly.jsdelivr.net/npm/tesseract.js@5/dist/worker.min.js';
+const TESS_CORE = 'https://fastly.jsdelivr.net/npm/tesseract.js-core@5/';
+const TESS_LANG = 'https://fastly.jsdelivr.net/gh/naptha/tessdata@gh-pages/4.0.0/';
+
+async function ensureWorker() {
+  if (worker) return worker;
+  log('正在加载 OCR 引擎（中文，首次较慢）...', 'warn');
+  setOverlay('加载 OCR 中...');
+  worker = await Tesseract.createWorker('chi_sim', 1, {
+    workerPath: TESS_WORKER,
+    workerBlobURL: false,
+    corePath: TESS_CORE,
+    langPath: TESS_LANG,
+    gzip: true,
+  });
+  await worker.setParameters({
+    tessedit_pageseg_mode: Tesseract.PSM.SINGLE_BLOCK,
+  });
+  log('OCR 引擎就绪', 'ok');
+  return worker;
+}
+
+// ============ 提取标签信息 ============
+function extractLabelInfo(words, fullText) {
+  const compact = fullText.replace(/\s+/g, '');
+  if (!compact.includes('昵称') || !compact.includes('序号')) return null;
+
+  let nickname = '';
+  const nickMatch = fullText.match(/昵\s*称\s*[:：]?\s*(.+?)(?:\n|序\s*号|弹\s*幕|零\s*点|默\s*认|$)/);
+  if (nickMatch) {
+    nickname = nickMatch[1].replace(/[\s]+/g, '').trim();
+  }
+  if (!nickname) {
+    nickname = compact.replace(/.*昵称[:：]?/, '').replace(/序号.*/, '').slice(0, 12) || '未命名';
+  }
+
+  let number = '';
+  const numMatch = fullText.match(/序\s*号\s*[:：]\s*([\d ]+)/);
+  if (numMatch) {
+    number = numMatch[1].replace(/\s+/g, '');
+  }
+
+  if (!nickname || !number) return null;
+  return { nickname, number };
+}
+
+// ============ 图像预处理 ============
+function enhanceImage(srcCanvas) {
+  const w = srcCanvas.width, h = srcCanvas.height;
+  const ctx = srcCanvas.getContext('2d');
+  const imgData = ctx.getImageData(0, 0, w, h);
+  const d = imgData.data;
+
+  const hist = new Uint32Array(256);
+  for (let i = 0; i < d.length; i += 4) {
+    const g = (d[i] * 0.299 + d[i+1] * 0.587 + d[i+2] * 0.114) | 0;
+    hist[g]++;
+  }
+  const total = (d.length / 4) | 0;
+  const cut = Math.floor(total * 0.01);
+  let acc = 0, minG = 0, maxG = 255;
+  for (let i = 0; i < 256; i++) { acc += hist[i]; if (acc >= cut) { minG = i; break; } }
+  acc = 0;
+  for (let i = 255; i >= 0; i--) { acc += hist[i]; if (acc >= cut) { maxG = i; break; } }
+  const range = maxG - minG || 1;
+
+  for (let i = 0; i < d.length; i += 4) {
+    const g = (d[i] * 0.299 + d[i+1] * 0.587 + d[i+2] * 0.114) | 0;
+    const stretched = Math.min(255, Math.max(0, ((g - minG) * 255 / range) | 0));
+    d[i] = d[i+1] = d[i+2] = stretched;
+  }
+  ctx.putImageData(imgData, 0, 0);
+  return srcCanvas;
+}
+
+// ============ 拍照并下载（纯前端） ============
+async function captureAndSave(nickname, number) {
+  saveCanvas.width = video.videoWidth;
+  saveCanvas.height = video.videoHeight;
+  saveCtx.drawImage(video, 0, 0);
+
+  const dataUrl = saveCanvas.toDataURL('image/png');
+  const baseName = number ? `${number}_${nickname}` : nickname;
+  const safeName = baseName.replace(/[\\/:*?"<>|]/g, '_');
+  const filename = safeName + '.png';
+
+  flashEl.classList.add('show');
+  setTimeout(() => flashEl.classList.remove('show'), 120);
+
+  addThumb(dataUrl, safeName);
+
+  try {
+    const a = document.createElement('a');
+    a.href = dataUrl;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    capturedNames.push(filename);
+    log('已下载: ' + filename, 'ok');
+  } catch (e) {
+    log('下载失败: ' + e.message, 'err');
+  }
+
+  capturedCount++;
+  capCountEl.textContent = capturedCount;
+  counterEl.textContent = '已拍照: ' + capturedCount;
+}
+
+function addThumb(dataUrl, name) {
+  const div = document.createElement('div');
+  div.className = 'thumb';
+  const img = document.createElement('img');
+  img.src = dataUrl;
+  const cap = document.createElement('div');
+  cap.className = 'cap';
+  cap.textContent = name;
+  div.appendChild(img);
+  div.appendChild(cap);
+  thumbsEl.insertBefore(div, thumbsEl.firstChild);
+  while (thumbsEl.children.length > 30) thumbsEl.removeChild(thumbsEl.lastChild);
+}
+
+// ============ OCR 循环 ============
+async function ocrTick() {
+  if (!running || ocrBusy || !stream) return;
+  ocrBusy = true;
+  setOverlay('识别中...');
+
+  try {
+    const maxW = 1280;
+    let w = video.videoWidth;
+    let h = video.videoHeight;
+    if (w > maxW) { h = Math.round(h * maxW / w); w = maxW; }
+    ocrCanvas.width = w;
+    ocrCanvas.height = h;
+    ocrCtx.drawImage(video, 0, 0, w, h);
+
+    const cropX = Math.round(w * 0.025);
+    const cropY = Math.round(h * 0.025);
+    const cropW = w - cropX * 2;
+    const cropH = h - cropY * 2;
+    const ocrTarget = document.createElement('canvas');
+    ocrTarget.width = cropW;
+    ocrTarget.height = cropH;
+    ocrTarget.getContext('2d').drawImage(ocrCanvas, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
+
+    drawRegionOverlay(null, w, h);
+    const wkr = await ensureWorker();
+
+    let info = null;
+    for (let attempt = 0; attempt < 2 && !info; attempt++) {
+      if (attempt === 1) enhanceImage(ocrTarget);
+      const { data } = await wkr.recognize(ocrTarget);
+      info = extractLabelInfo(data.words || [], data.text || '');
+    }
+
+    if (info) {
+      noLabelFrames = 0;
+      const now = Date.now();
+      const key = info.nickname;
+      const numDisplay = info.number || '—';
+      setStatus('<span class="ok">检测到标签</span><br>昵称: <b>' + info.nickname + '</b><br>编号: <b style="color:#89b4fa">' + numDisplay + '</b>');
+      setOverlay('✓ ' + info.nickname);
+
+      if (capturedSet.has(key)) {
+        setOverlay('✓ ' + info.nickname + '（已拍过）');
+      } else if (key !== lastCaptureKey && now - lastCaptureTime > CAPTURE_COOLDOWN) {
+        lastCaptureKey = key;
+        lastCaptureTime = now;
+        capturedSet.add(key);
+        log('识别到: 昵称=' + info.nickname + ' 编号=' + info.number + ' -> 拍照', 'ok');
+        await captureAndSave(info.nickname, info.number);
+      }
+    } else {
+      noLabelFrames++;
+      if (noLabelFrames >= NO_LABEL_RESET) {
+        lastCaptureKey = '';
+      }
+      setStatus('<span class="warn">未检测到有效标签</span><br>请将标签对准摄像头');
+      setOverlay('搜索标签中...');
+    }
+  } catch (e) {
+    log('OCR 出错: ' + e.message, 'err');
+  } finally {
+    ocrBusy = false;
+  }
+}
+
+// ============ 启动 / 停止 ============
+async function start() {
+  startBtn.disabled = true;
+  stopBtn.disabled = false;
+  await startCamera();
+  if (!stream) { startBtn.disabled = false; stopBtn.disabled = true; return; }
+  running = true;
+  log('开始识别', 'ok');
+  ocrTick();
+  ocrTimer = setInterval(ocrTick, OCR_INTERVAL);
+}
+
+function stop() {
+  running = false;
+  if (ocrTimer) { clearInterval(ocrTimer); ocrTimer = null; }
+  stopCamera();
+  startBtn.disabled = false;
+  stopBtn.disabled = true;
+  setStatus('已停止');
+  setOverlay('已停止');
+  log('已停止识别');
+}
+
+// ============ 手动拍照 ============
+async function manualCapture() {
+  if (!stream) { log('请先启动摄像头', 'warn'); return; }
+  ocrBusy = true;
+  try {
+    const maxW = 1280;
+    let w = video.videoWidth, h = video.videoHeight;
+    if (w > maxW) { h = Math.round(h * maxW / w); w = maxW; }
+    ocrCanvas.width = w; ocrCanvas.height = h;
+    ocrCtx.drawImage(video, 0, 0, w, h);
+    const wkr = await ensureWorker();
+    let info = null;
+    for (let attempt = 0; attempt < 2 && !info; attempt++) {
+      if (attempt === 1) enhanceImage(ocrCanvas);
+      const { data } = await wkr.recognize(ocrCanvas);
+      info = extractLabelInfo(data.words || [], data.text || '');
+    }
+    if (info) {
+      log('手动拍照: ' + info.number + '_' + info.nickname, 'ok');
+      await captureAndSave(info.nickname, info.number);
+    } else {
+      const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+      log('手动拍照（未识别到文字）: ' + ts, 'warn');
+      await captureAndSave('未命名', ts);
+    }
+  } catch (e) {
+    log('手动拍照识别出错: ' + e.message, 'err');
+  } finally {
+    ocrBusy = false;
+  }
+}
+
+// ============ 移除上一张 ============
+function deleteLast() {
+  if (capturedNames.length === 0) {
+    log('没有可移除的照片', 'warn');
+    return;
+  }
+  const filename = capturedNames.pop();
+  if (thumbsEl.firstChild) thumbsEl.removeChild(thumbsEl.firstChild);
+  capturedCount--;
+  if (capturedCount < 0) capturedCount = 0;
+  capCountEl.textContent = capturedCount;
+  counterEl.textContent = '已拍照: ' + capturedCount;
+  capturedSet.delete(lastCaptureKey);
+  log('已从列表移除: ' + filename + '（本地下载文件需手动删除）', 'ok');
+}
+
+function drawRegionOverlay(region, ocrW, ocrH) {
+  const wrap = regionCanvas.parentElement;
+  const cw = wrap.clientWidth;
+  const ch = wrap.clientHeight;
+  regionCanvas.width = cw;
+  regionCanvas.height = ch;
+  regionCtx.clearRect(0, 0, cw, ch);
+}
+
+// ============ 事件绑定 ============
+startBtn.addEventListener('click', start);
+stopBtn.addEventListener('click', stop);
+manualBtn.addEventListener('click', manualCapture);
+document.getElementById('deleteBtn').addEventListener('click', deleteLast);
+
+// ============ 快捷键 ============
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'F2') {
+    e.preventDefault();
+    manualCapture();
+  } else if (e.key === 'F3') {
+    e.preventDefault();
+    f3Count++;
+    const remaining = 3 - f3Count;
+    if (remaining > 0) {
+      log('移除确认：再按 ' + remaining + ' 次 F3', 'warn');
+      setOverlay('再按 ' + remaining + ' 次 F3 移除');
+    } else {
+      f3Count = 0;
+      if (f3Timer) { clearTimeout(f3Timer); f3Timer = null; }
+      deleteLast();
+      return;
+    }
+    if (f3Timer) clearTimeout(f3Timer);
+    f3Timer = setTimeout(() => { f3Count = 0; setOverlay('搜索标签中...'); }, 1500);
+  }
+});
+
+camSelect.addEventListener('change', async () => {
+  if (running) { await startCamera(); }
+});
+
+window.addEventListener('beforeunload', () => {
+  stop();
+  if (worker) { worker.terminate(); }
+});
+
+// ============ 初始化 ============
+listCameras().then(() => log('摄像头列表已加载', 'ok'));
+</script>
+</body>
+</html>
