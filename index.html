@@ -4,7 +4,10 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>标签识别自动拍照</title>
-<script src="https://fastly.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+<!-- 主 CDN：fastly.jsdelivr.net（国内快速） -->
+<script src="https://fastly.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"
+        onerror="if(typeof Tesseract==='undefined'){var s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js';s.onerror=function(){if(typeof Tesseract==='undefined'){var s2=document.createElement('script');s2.src='https://unpkg.com/tesseract.js@5/dist/tesseract.min.js';document.head.appendChild(s2);}};document.head.appendChild(s);}"></script>
+<!-- 如果全部 CDN 都失败，会在后面的 JS 中检测到 typeof Tesseract === 'undefined' 并提示 -->
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body {
@@ -599,6 +602,15 @@ window.addEventListener('beforeunload', () => {
 });
 
 // ============ 初始化 ============
+// 检查 Tesseract 是否成功加载
+if (typeof Tesseract === 'undefined') {
+  setStatus('<span class="err">OCR 引擎加载失败</span><br>请检查网络连接后刷新页面<br>Tesseract.js CDN 不可达');
+  log('OCR 引擎加载失败（所有 CDN 均不可达）', 'err');
+  startBtn.disabled = true;
+  manualBtn.disabled = true;
+} else {
+  log('Tesseract.js 加载成功', 'ok');
+}
 listCameras().then(() => log('摄像头列表已加载', 'ok'));
 </script>
 </body>
