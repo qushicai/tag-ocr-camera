@@ -418,6 +418,80 @@ function addThumb(dataUrl, name) {
   while (thumbsEl.children.length > 30) thumbsEl.removeChild(thumbsEl.lastChild);
 }
 
+// ============ 检测标签区域（亮白色矩形定位） ============
+// 标签是亮白色卡片（灰度 > 180），周围背景偏暗
+// 在缩放到 320px 宽的低分辨率图上快速找边界框
+function detectLabelRegion(video) {
+  const W = 320;
+  const H = Math.round(video.videoHeight * W / video.videoWidth);
+  const tmp = document.createElement('canvas');
+  tmp.width = W; tmp.height = H;
+  const tc = tmp.getContext('2d', { willReadFrequently: true });
+  tc.drawImage(video, 0, 0, W, H);
+  const img = tc.getImageData(0, 0, W, H);
+  const d = img.data;
+
+  // 1. 灰度 + 二值化（白标签：g > 180）
+  const mask = new Uint8Array(W * H);
+  for (let i = 0, p = 0; i < d.length; i += 4, p++) {
+    const g = (d[i] * 0.299 + d[i+1] * 0.587 + d[i+2] * 0.114) | 0;
+    mask[p] = g > 180 ? 1 : 0;
+  }
+
+  // 2. 找所有白色像素的包围盒
+  let minX = W, maxX = 0, minY = H, maxY = 0;
+  let whiteCount = 0;
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      if (mask[y * W + x]) {
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+        whiteCount++;
+      }
+    }
+  }
+
+  if (whiteCount === 0) return null;
+
+  const bw = maxX - minX + 1;
+  const bh = maxY - minY + 1;
+  const area = bw * bh;
+  const frameArea = W * H;
+
+  // 3. 校验：标签应该占 5%~60% 的画面，长宽比 1~4
+  if (area < frameArea * 0.05 || area > frameArea * 0.6) return null;
+  const ratio = bw / bh;
+  if (ratio < 1 || ratio > 4) return null;
+
+  // 4. 检查白像素密度（包围盒内白像素占比应 > 40%，否则是零散白点不是标签）
+  let density = 0;
+  for (let y = minY; y <= maxY; y++) {
+    for (let x = minX; x <= maxX; x++) {
+      if (mask[y * W + x]) density++;
+    }
+  }
+  if (density / area < 0.4) return null;
+
+  // 5. 加 8% 边距（标签周围留点空间）
+  const padX = Math.round(bw * 0.08);
+  const padY = Math.round(bh * 0.08);
+  minX = Math.max(0, minX - padX);
+  minY = Math.max(0, minY - padY);
+  maxX = Math.min(W - 1, maxX + padX);
+  maxY = Math.min(H - 1, maxY + padY);
+
+  // 6. 映射回原图坐标
+  const scale = video.videoWidth / W;
+  return {
+    x: Math.round(minX * scale),
+    y: Math.round(minY * scale),
+    w: Math.round((maxX - minX + 1) * scale),
+    h: Math.round((maxY - minY + 1) * scale),
+  };
+}
+
 // ============ OCR 循环 ============
 async function ocrTick() {
   if (!running || ocrBusy || !stream) return;
@@ -425,24 +499,48 @@ async function ocrTick() {
   setOverlay('识别中...');
 
   try {
-    const maxW = 1280;
-    let w = video.videoWidth;
-    let h = video.videoHeight;
+    // 先画原始帧
+    let maxW = 1280;
+    let vw = video.videoWidth, vh = video.videoHeight;
+    let w = vw, h = vh;
     if (w > maxW) { h = Math.round(h * maxW / w); w = maxW; }
     ocrCanvas.width = w;
     ocrCanvas.height = h;
     ocrCtx.drawImage(video, 0, 0, w, h);
 
-    const cropX = Math.round(w * 0.025);
-    const cropY = Math.round(h * 0.025);
-    const cropW = w - cropX * 2;
-    const cropH = h - cropY * 2;
-    const ocrTarget = document.createElement('canvas');
-    ocrTarget.width = cropW;
-    ocrTarget.height = cropH;
-    ocrTarget.getContext('2d').drawImage(ocrCanvas, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
+    // 尝试检测标签区域
+    let region = detectLabelRegion(video);
+    let ocrX, ocrY, ocrW, ocrH;
 
-    drawRegionOverlay(null, w, h);
+    if (region) {
+      // 把检测坐标映射到降采样画布
+      const sx = w / vw;
+      ocrX = Math.max(0, Math.round(region.x * sx));
+      ocrY = Math.max(0, Math.round(region.y * sx));
+      ocrW = Math.min(w - ocrX, Math.round(region.w * sx));
+      ocrH = Math.min(h - ocrY, Math.round(region.h * sx));
+      // 限制 OCR 区域最小 400px 宽，太小就放大
+      if (ocrW < 400) {
+        const factor = 400 / ocrW;
+        ocrW = Math.round(ocrW * factor);
+        ocrH = Math.round(ocrH * factor);
+      }
+      drawRegionOverlay({ x: ocrX, y: ocrY, w: ocrW, h: ocrH }, w, h);
+    } else {
+      // 没检测到，降级：用中心 60% 区域
+      ocrX = Math.round(w * 0.2);
+      ocrY = Math.round(h * 0.2);
+      ocrW = Math.round(w * 0.6);
+      ocrH = Math.round(h * 0.6);
+      drawRegionOverlay(null, w, h);
+    }
+
+    // 裁剪 OCR 目标
+    const ocrTarget = document.createElement('canvas');
+    ocrTarget.width = ocrW;
+    ocrTarget.height = ocrH;
+    ocrTarget.getContext('2d').drawImage(ocrCanvas, ocrX, ocrY, ocrW, ocrH, 0, 0, ocrW, ocrH);
+
     const wkr = await ensureWorker();
 
     let info = null;
@@ -519,16 +617,35 @@ async function manualCapture() {
   ocrBusy = true;
   try {
     const maxW = 1280;
-    let w = video.videoWidth, h = video.videoHeight;
+    let vw = video.videoWidth, vh = video.videoHeight;
+    let w = vw, h = vh;
     if (w > maxW) { h = Math.round(h * maxW / w); w = maxW; }
     ocrCanvas.width = w; ocrCanvas.height = h;
     ocrCtx.drawImage(video, 0, 0, w, h);
+
+    // 复用标签区域检测
+    let region = detectLabelRegion(video);
+    let ocrX, ocrY, ocrW, ocrH;
+    if (region) {
+      const sx = w / vw;
+      ocrX = Math.round(region.x * sx);
+      ocrY = Math.round(region.y * sx);
+      ocrW = Math.round(region.w * sx);
+      ocrH = Math.round(region.h * sx);
+    } else {
+      ocrX = Math.round(w * 0.2); ocrY = Math.round(h * 0.2);
+      ocrW = Math.round(w * 0.6); ocrH = Math.round(h * 0.6);
+    }
+    const target = document.createElement('canvas');
+    target.width = ocrW; target.height = ocrH;
+    target.getContext('2d').drawImage(ocrCanvas, ocrX, ocrY, ocrW, ocrH, 0, 0, ocrW, ocrH);
+
     const wkr = await ensureWorker();
     let info = null;
     let lastRawText = '';
     for (let attempt = 0; attempt < 2 && !info; attempt++) {
-      if (attempt === 1) enhanceImage(ocrCanvas);
-      const { data } = await wkr.recognize(ocrCanvas);
+      if (attempt === 1) enhanceImage(target);
+      const { data } = await wkr.recognize(target);
       lastRawText = data.text || '';
       info = extractLabelInfo(data.words || [], data.text || '');
     }
@@ -572,6 +689,36 @@ function drawRegionOverlay(region, ocrW, ocrH) {
   regionCanvas.width = cw;
   regionCanvas.height = ch;
   regionCtx.clearRect(0, 0, cw, ch);
+
+  if (region && ocrW && ocrH) {
+    // 计算 video 显示区域的实际尺寸（object-fit: contain）
+    const vAspect = ocrW / ocrH;
+    const cAspect = cw / ch;
+    let vDispW, vDispH, vOffsetX, vOffsetY;
+    if (vAspect > cAspect) {
+      vDispW = cw;
+      vDispH = cw / vAspect;
+      vOffsetX = 0;
+      vOffsetY = (ch - vDispH) / 2;
+    } else {
+      vDispH = ch;
+      vDispW = ch * vAspect;
+      vOffsetY = 0;
+      vOffsetX = (cw - vDispW) / 2;
+    }
+    const sx = vDispW / ocrW;
+    const sy = vDispH / ocrH;
+    const rx = vOffsetX + region.x * sx;
+    const ry = vOffsetY + region.y * sy;
+    const rw = region.w * sx;
+    const rh = region.h * sy;
+    regionCtx.strokeStyle = '#a6e3a1';
+    regionCtx.lineWidth = 3;
+    regionCtx.strokeRect(rx, ry, rw, rh);
+    // 半透明遮罩提示区域
+    regionCtx.fillStyle = 'rgba(166, 227, 161, 0.08)';
+    regionCtx.fillRect(rx, ry, rw, rh);
+  }
 }
 
 // ============ 事件绑定 ============
