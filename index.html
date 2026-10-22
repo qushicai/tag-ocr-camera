@@ -510,6 +510,7 @@ async function ocrTick() {
   setOverlay('识别中...');
 
   try {
+    let step = 'drawFrame';
     // 先画原始帧
     let maxW = 1280;
     let vw = video.videoWidth, vh = video.videoHeight;
@@ -519,41 +520,42 @@ async function ocrTick() {
     ocrCanvas.height = h;
     ocrCtx.drawImage(video, 0, 0, w, h);
 
-    // 尝试检测标签区域
+    step = 'detectRegion';
     let region = detectLabelRegion(video);
     let ocrX, ocrY, ocrW, ocrH;
 
     if (region) {
-      // 把检测坐标映射到降采样画布
       const sx = w / vw;
       ocrX = Math.max(0, Math.round(region.x * sx));
       ocrY = Math.max(0, Math.round(region.y * sx));
       ocrW = Math.min(w - ocrX, Math.round(region.w * sx));
       ocrH = Math.min(h - ocrY, Math.round(region.h * sx));
-      // 限制 OCR 区域最小 400px 宽，太小就放大
       if (ocrW < 400) {
         const factor = 400 / ocrW;
         ocrW = Math.round(ocrW * factor);
         ocrH = Math.round(ocrH * factor);
       }
+      step = 'drawOverlay-region';
       drawRegionOverlay({ x: ocrX, y: ocrY, w: ocrW, h: ocrH }, w, h);
     } else {
-      // 没检测到，降级：用中心 60% 区域
       ocrX = Math.round(w * 0.2);
       ocrY = Math.round(h * 0.2);
       ocrW = Math.round(w * 0.6);
       ocrH = Math.round(h * 0.6);
+      step = 'drawOverlay-none';
       drawRegionOverlay(null, w, h);
     }
 
-    // 裁剪 OCR 目标
+    step = 'cropCanvas';
     const ocrTarget = document.createElement('canvas');
     ocrTarget.width = ocrW;
     ocrTarget.height = ocrH;
     ocrTarget.getContext('2d').drawImage(ocrCanvas, ocrX, ocrY, ocrW, ocrH, 0, 0, ocrW, ocrH);
 
+    step = 'ensureWorker';
     const wkr = await ensureWorker();
 
+    step = 'ocr';
     let info = null;
     let lastRawText = '';
     for (let attempt = 0; attempt < 2 && !info; attempt++) {
@@ -593,7 +595,10 @@ async function ocrTick() {
       }
     }
   } catch (e) {
-    log('OCR 出错: ' + String(e) + (e && e.stack ? '\n  at ' + e.stack.split('\n').slice(1,3).join('\n  at ') : ''), 'err');
+    const msg = e ? (e.message || String(e)) : 'undefined/empty error';
+    log('OCR 出错 [step=' + (typeof step !== 'undefined' ? step : '?') + ']: ' + msg, 'err');
+    if (console && console.error) console.error('[OCR ERROR step=' + (typeof step !== 'undefined' ? step : '?') + ']', e);
+    if (e && e.stack) console.error(e.stack);
   } finally {
     ocrBusy = false;
   }
@@ -694,9 +699,11 @@ function deleteLast() {
 }
 
 function drawRegionOverlay(region, ocrW, ocrH) {
-  const wrap = regionCanvas.parentElement;
+  const wrap = regionCanvas && regionCanvas.parentElement;
+  if (!wrap) return;
   const cw = wrap.clientWidth;
   const ch = wrap.clientHeight;
+  if (!cw || !ch) return;
   regionCanvas.width = cw;
   regionCanvas.height = ch;
   regionCtx.clearRect(0, 0, cw, ch);
