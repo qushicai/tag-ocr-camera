@@ -324,24 +324,99 @@ async function ensureWorker() {
 // ============ 提取标签信息 ============
 function extractLabelInfo(words, fullText) {
   const compact = fullText.replace(/\s+/g, '');
-  if (!compact.includes('昵称') || !compact.includes('序号')) return null;
 
+  // 1. 先找出所有数字序列（1-5位）
+  const allNumbers = [];
+  const numRe = /\d{1,5}/g;
+  let m;
+  while ((m = numRe.exec(compact)) !== null) {
+    allNumbers.push({ val: m[0], idx: m.index });
+  }
+
+  // 2. 找关键字位置（模糊：只要首字或核心字出现即可）
+  // 昵/倪/妮 = 昵称；序/叙/绪 = 序号；编/扁/遍 = 编号；弹/掸 = 弹幕
+  const keywordMap = {
+    nickname: [/昵/, /倪/, /妮/],
+    xuhao:    [/序/, /叙/, /绪/],
+    bianhao:  [/编/, /扁/, /遍/],
+    danmu:    [/弹/, /掸/],
+  };
+
+  function findKeywordIdx(patterns) {
+    for (const p of patterns) {
+      const idx = compact.search(p);
+      if (idx >= 0) return idx;
+    }
+    return -1;
+  }
+
+  const nickIdx = findKeywordIdx(keywordMap.nickname);
+  const xuIdx   = findKeywordIdx(keywordMap.xuhao);
+  const bianIdx = findKeywordIdx(keywordMap.bianhao);
+  const danIdx  = findKeywordIdx(keywordMap.danmu);
+
+  // 3. 至少要找到一个关键字 + 至少一个数字
+  const hasKeyword = nickIdx >= 0 || xuIdx >= 0 || bianIdx >= 0 || danIdx >= 0;
+  if (!hasKeyword || allNumbers.length === 0) return null;
+
+  // 4. 提取昵称（在"昵"之后、下一个关键字之前）
   let nickname = '';
-  const nickMatch = fullText.match(/昵\s*称\s*[:：]?\s*(.+?)(?:\n|序\s*号|弹\s*幕|零\s*点|默\s*认|$)/);
-  if (nickMatch) {
-    nickname = nickMatch[1].replace(/[\s]+/g, '').trim();
+  if (nickIdx >= 0) {
+    const stopIdx = [xuIdx, bianIdx, danIdx].filter(i => i > nickIdx).sort((a,b)=>a-b)[0] || compact.length;
+    nickname = compact.slice(nickIdx + 1, stopIdx).replace(/[:：\d\s]/g, '').replace(/[^\u4e00-\u9fa5a-zA-Z]/g, '');
   }
+  // 如果没找到昵称关键字，用启发式：第一个/最长的中文字段
   if (!nickname) {
-    nickname = compact.replace(/.*昵称[:：]?/, '').replace(/序号.*/, '').slice(0, 12) || '未命名';
+    const zhBlocks = compact.match(/[\u4e00-\u9fa5a-zA-Z]{2,}/g);
+    if (zhBlocks) {
+      // 选最长的中文块（通常是昵称或品牌名）
+      nickname = zhBlocks.sort((a,b) => b.length - a.length)[0];
+      // 排除纯品牌词
+      if (nickname.length <= 3 && /零点|潮玩|文创/.test(nickname)) {
+        nickname = zhBlocks[1] || nickname;
+      }
+    }
   }
+  nickname = (nickname || '未命名').slice(0, 12);
 
+  // 5. 提取编号/序号：优先"编号"后的数字，其次"序号"后的，再次最大的数字
   let number = '';
-  const numMatch = fullText.match(/序\s*号\s*[:：]\s*([\d ]+)/);
-  if (numMatch) {
-    number = numMatch[1].replace(/\s+/g, '');
+  function numberAfterKeyword(kwIdx) {
+    if (kwIdx < 0) return '';
+    // 找关键字之后最近的数字
+    let best = '';
+    let bestDist = Infinity;
+    for (const n of allNumbers) {
+      if (n.idx > kwIdx && n.idx - kwIdx < bestDist && n.idx - kwIdx < 15) {
+        bestDist = n.idx - kwIdx;
+        best = n.val;
+      }
+    }
+    return best;
+  }
+  // 策略1：编号（右侧大号数字）
+  number = numberAfterKeyword(bianIdx);
+  // 策略2：序号
+  if (!number) number = numberAfterKeyword(xuIdx);
+  // 策略3：如果有关键字但没匹配到数字，取最大的那个（排除日期里的）
+  if (!number && hasKeyword) {
+    // 过滤掉日期中的数字（紧跟在 2025/2026/2027 后面的）
+    const filtered = allNumbers.filter(n => {
+      const before = compact.slice(Math.max(0, n.idx - 4), n.idx);
+      return !/202[0-9]/.test(before);
+    });
+    if (filtered.length) {
+      // 选最接近关键字的那个
+      const nearest = filtered.reduce((a, b) => {
+        const ka = [nickIdx, xuIdx, bianIdx, danIdx].filter(i=>i>=0).reduce((best,i)=>Math.min(best, Math.abs(a.idx-i)), Infinity);
+        const kb = [nickIdx, xuIdx, bianIdx, danIdx].filter(i=>i>=0).reduce((best,i)=>Math.min(best, Math.abs(b.idx-i)), Infinity);
+        return ka < kb ? a : b;
+      });
+      number = nearest.val;
+    }
   }
 
-  if (!nickname || !number) return null;
+  if (!nickname) return null;
   return { nickname, number };
 }
 
